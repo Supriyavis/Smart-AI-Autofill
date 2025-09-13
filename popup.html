@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart AI Autofill</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <div class="header">
+      <div class="logo">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M9 12l2 2 4-4"></path>
+          <circle cx="12" cy="12" r="10"></circle>
+        </svg>
+        <h1>Smart Autofill</h1>
+      </div>
+      <button class="settings-btn" id="settingsBtn" title="Settings">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="m12 1 1.28 3.26a7.87 7.87 0 0 1 2.46.97l3.26-1.28 2.69 4.66-2.26 2.84c.06.4.06.8 0 1.2l2.26 2.84-2.69 4.66-3.26-1.28a7.87 7.87 0 0 1-2.46.97L12 23l-1.28-3.26a7.87 7.87 0 0 1-2.46-.97L4.98 20.05 2.29 15.39l2.26-2.84c-.06-.4-.06-.8 0-1.2L2.29 8.61l2.69-4.66 3.26 1.28a7.87 7.87 0 0 1 2.46-.97L12 1Z"></path>
+        </svg>
+      </button>
+    </div>
+
+    <div class="stats-section">
+      <div class="stat-card">
+        <div class="stat-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+            <circle cx="12" cy="7" r="4"></circle>
+          </svg>
+        </div>
+        <div class="stat-content">
+          <h3 id="profileCount">0</h3>
+          <p>Profiles</p>
+        </div>
+      </div>
+      
+      <div class="stat-card">
+        <div class="stat-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M9 12l2 2 4-4"></path>
+            <circle cx="12" cy="12" r="10"></circle>
+          </svg>
+        </div>
+        <div class="stat-content">
+          <h3 id="fillCount">0</h3>
+          <p>Forms Filled</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="profiles-section">
+      <div class="section-header">
+        <h2>Recent Profiles</h2>
+        <button class="btn btn-sm btn-primary" id="createProfileBtn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          New
+        </button>
+      </div>
+      
+      <div class="profiles-list" id="profilesList">
+        <div class="loading">
+          <div class="spinner"></div>
+          <p>Loading profiles...</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="actions-section">
+      <button class="btn btn-secondary btn-full" id="openOptionsBtn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="m12 1 1.28 3.26a7.87 7.87 0 0 1 2.46.97l3.26-1.28 2.69 4.66-2.26 2.84c.06.4.06.8 0 1.2l2.26 2.84-2.69 4.66-3.26-1.28a7.87 7.87 0 0 1-2.46.97L12 23l-1.28-3.26a7.87 7.87 0 0 1-2.46-.97L4.98 20.05 2.29 15.39l2.26-2.84c-.06-.4-.06-.8 0-1.2L2.29 8.61l2.69-4.66 3.26 1.28a7.87 7.87 0 0 1 2.46-.97L12 1Z"></path>
+        </svg>
+        Manage Profiles
+      </button>
+      
+      <button class="btn btn-primary btn-full" id="autofillBtn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M9 12l2 2 4-4"></path>
+          <circle cx="12" cy="12" r="10"></circle>
+        </svg>
+        Smart Fill Current Page
+      </button>
+    </div>
+
+    <div class="footer">
+      <p>Powered by AI • Secure & Private</p>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
