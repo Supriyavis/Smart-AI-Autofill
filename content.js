@@ -2,16 +2,137 @@
 class SmartAutofill {
   constructor() {
     this.setupMessageListener();
-    this.geminiAPI = null;
-    this.initGeminiAPI();
   }
 
-  initGeminiAPI() {
-    // Initialize Gemini API for intelligent field matching
-    this.geminiAPI = {
-      apiKey: 'AIzaSyB3rWKBuqOTrV0uM1v3GSXpWhGy2CukEEA',
-      baseURL: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent'
-    };
+  // Read settings from storage
+  async getSettings() {
+    return new Promise((resolve) => {
+      chrome.storage.local.get([
+        'confidenceThreshold', 'showPreview', 'requireConfirmation', 'enableAnimation'
+      ], (settings) => {
+        resolve({
+          confidenceThreshold: settings.confidenceThreshold ?? 0.8,
+          showPreview: settings.showPreview !== false, // default true
+          requireConfirmation: settings.requireConfirmation || false,
+          enableAnimation: settings.enableAnimation !== false,
+        });
+      });
+    });
+  }
+
+  // Render AI preview overlay, return Promise<selectedMatches[]>
+  showPreviewOverlay(matches, { threshold = 0.8 } = {}) {
+    return new Promise((resolve) => {
+      // Create overlay
+      const overlay = document.createElement('div');
+      overlay.className = 'smart-autofill-overlay active';
+
+      const modal = document.createElement('div');
+      modal.className = 'autofill-modal';
+      overlay.appendChild(modal);
+
+      // Header
+      const header = document.createElement('div');
+      header.className = 'modal-header';
+      header.innerHTML = `
+        <h3>Smart Autofill Preview</h3>
+        <button class="close-btn" aria-label="Close">×</button>
+      `;
+      modal.appendChild(header);
+
+      header.querySelector('.close-btn').onclick = () => {
+        overlay.classList.add('closing');
+        setTimeout(() => overlay.remove(), 200);
+        resolve([]);
+      };
+
+      // Content
+      const content = document.createElement('div');
+      content.className = 'modal-content';
+      modal.appendChild(content);
+
+      const info = document.createElement('div');
+      info.className = 'step active';
+      info.innerHTML = `
+        <div style="margin-bottom:12px;color:#6b7280;font-size:14px;">Review and confirm fields to fill. High-confidence items are preselected.</div>
+      `;
+      content.appendChild(info);
+
+      const list = document.createElement('div');
+      list.className = 'suggestions-list';
+      content.appendChild(list);
+
+      // Build rows
+      matches.forEach((m, idx) => {
+        const conf = Number(m.confidence ?? 0);
+        const isHigh = conf >= threshold;
+        const item = document.createElement('div');
+        item.className = 'suggestion-item ' + (conf >= 0.85 ? 'high-confidence' : conf >= 0.65 ? 'medium-confidence' : 'low-confidence');
+        item.innerHTML = `
+          <div class="suggestion-header">
+            <div class="field-label">${(m.field?.label || m.field?.placeholder || m.field?.name || m.field?.id || 'Field').toString().slice(0,80)}</div>
+            <div class="confidence-badge">
+              <span class="confidence-score">${Math.round(conf*100)}%</span>
+              <div class="confidence-bar"><div class="confidence-fill" style="width:${Math.round(conf*100)}%"></div></div>
+            </div>
+          </div>
+          <div class="suggestion-content">
+            <input class="suggestion-value" type="text" value="${(String(m.value || '')).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}">
+            <p class="suggestion-reasoning">${(m.reasoning || m.method || '').toString().slice(0,140)}</p>
+          </div>
+          <div class="suggestion-actions">
+            <button class="btn-toggle ${isHigh ? 'active' : ''}" title="Include/Exclude">✔</button>
+          </div>
+        `;
+        list.appendChild(item);
+
+        // Toggle handling
+        const toggle = item.querySelector('.btn-toggle');
+        toggle.dataset.selected = isHigh ? '1' : '0';
+        toggle.onclick = () => {
+          const sel = toggle.dataset.selected === '1';
+          toggle.dataset.selected = sel ? '0' : '1';
+          toggle.classList.toggle('active');
+        };
+
+        // Allow editing value
+        const input = item.querySelector('.suggestion-value');
+        input.oninput = () => {
+          m.value = input.value;
+        };
+
+        // Keep a reference for extraction later
+        item.dataset.index = String(idx);
+      });
+
+      // Actions
+      const actions = document.createElement('div');
+      actions.className = 'modal-actions';
+      actions.innerHTML = `
+        <button class="btn btn-secondary" id="autofill-cancel">Cancel</button>
+        <button class="btn btn-primary" id="autofill-confirm">Fill Selected</button>
+      `;
+      content.appendChild(actions);
+
+      actions.querySelector('#autofill-cancel').onclick = () => {
+        overlay.classList.add('closing');
+        setTimeout(() => overlay.remove(), 200);
+        resolve([]);
+      };
+      actions.querySelector('#autofill-confirm').onclick = () => {
+        const selected = [];
+        list.querySelectorAll('.suggestion-item').forEach((el) => {
+          const idx = Number(el.dataset.index);
+          const toggled = el.querySelector('.btn-toggle')?.dataset.selected === '1';
+          if (toggled) selected.push(matches[idx]);
+        });
+        overlay.classList.add('closing');
+        setTimeout(() => overlay.remove(), 200);
+        resolve(selected);
+      };
+
+      document.body.appendChild(overlay);
+    });
   }
 
   setupMessageListener() {
@@ -31,6 +152,8 @@ class SmartAutofill {
   async handleAutofillRequest(profile) {
     try {
       console.log('Starting autofill with profile:', profile.name);
+      // Expose profile data for option/MCQ helpers
+      try { window.__lastAutofillProfileData = profile.data || {}; } catch (_) {}
       
       // Find all form fields on the page
       const formFields = this.detectFormFields();
@@ -44,8 +167,25 @@ class SmartAutofill {
       const matches = await this.matchFieldsToProfile(formFields, profile.data);
       console.log('Field matches:', matches);
 
-      // Fill the matched fields
-      const filledCount = await this.fillFields(matches);
+      // Load user settings
+      const settings = await this.getSettings();
+      const threshold = Number(settings.confidenceThreshold ?? 0.8);
+
+      // Partition by confidence
+      const high = matches.filter(m => (m.confidence ?? 0) >= threshold);
+      const low = matches.filter(m => (m.confidence ?? 0) < threshold);
+
+      let filledCount = 0;
+      if (settings.showPreview || settings.requireConfirmation) {
+        // Show overlay preview and let user choose
+        const selected = await this.showPreviewOverlay([...high, ...low], { threshold });
+        if (selected && selected.length) {
+          filledCount += await this.fillFields(selected);
+        }
+      } else {
+        // Auto-fill high confidence only
+        filledCount += await this.fillFields(high);
+      }
       
       // Update profile usage
       if (filledCount > 0) {
@@ -83,7 +223,8 @@ class SmartAutofill {
       'input[type="time"]',
       'input:not([type])', // Default input type is text
       'textarea',
-      'select'
+      'select',
+      '[contenteditable="true"]'
     ];
 
     selectors.forEach(selector => {
@@ -122,6 +263,7 @@ class SmartAutofill {
       placeholder: element.placeholder || '',
       label: this.getFieldLabel(element),
       ariaLabel: element.getAttribute('aria-label') || '',
+      autocomplete: (element.getAttribute('autocomplete') || '').toLowerCase(),
       className: element.className || '',
       tagName: element.tagName.toLowerCase()
     };
@@ -132,7 +274,8 @@ class SmartAutofill {
       fieldInfo.name,
       fieldInfo.placeholder,
       fieldInfo.label,
-      fieldInfo.ariaLabel
+      fieldInfo.ariaLabel,
+      fieldInfo.autocomplete
     ].join(' ').toLowerCase();
 
     return fieldInfo;
@@ -151,6 +294,14 @@ class SmartAutofill {
       return parentLabel.textContent.replace(element.value || '', '').trim();
     }
 
+    // aria-labelledby reference
+    const ariaLabelledBy = element.getAttribute('aria-labelledby');
+    if (ariaLabelledBy) {
+      const ids = ariaLabelledBy.split(/\s+/);
+      const texts = ids.map(id => document.getElementById(id)?.textContent?.trim()).filter(Boolean);
+      if (texts.length) return texts.join(' ');
+    }
+
     // Look for nearby text
     const parent = element.parentElement;
     if (parent) {
@@ -161,6 +312,15 @@ class SmartAutofill {
         .join(' ');
       
       if (nearbyText) return nearbyText;
+    }
+
+    // Google Forms heuristic: climb to question container and read heading
+    // Common containers have role="listitem" or role="group" with a child having role="heading"
+    const container = element.closest('[role="listitem"], [role="group"], .freebirdFormviewerComponentsQuestionBaseRoot') || element.closest('div');
+    if (container) {
+      const heading = container.querySelector('[role="heading"], .freebirdFormviewerComponentsQuestionBaseTitle');
+      const headingText = heading?.textContent?.trim();
+      if (headingText) return headingText;
     }
 
     return '';
@@ -249,7 +409,7 @@ class SmartAutofill {
       !matches.some(match => match.field === field)
     );
 
-    if (unmatchedFields.length > 0 && this.geminiAPI) {
+    if (unmatchedFields.length > 0) {
       try {
         const aiMatches = await this.getAIMatches(unmatchedFields, profileData);
         matches.push(...aiMatches);
@@ -283,6 +443,10 @@ class SmartAutofill {
       else if (field.ariaLabel.toLowerCase().includes(pattern)) {
         score += 0.6;
       }
+      // Match in autocomplete attribute (e.g., given-name, family-name, email)
+      else if (field.autocomplete && field.autocomplete.includes(pattern)) {
+        score += 0.9;
+      }
       // Partial match in search text
       else if (searchText.includes(pattern)) {
         score += 0.4;
@@ -294,71 +458,43 @@ class SmartAutofill {
 
   async getAIMatches(unmatchedFields, profileData) {
     try {
-      const prompt = `
-        You are an AI assistant that matches web form fields to user profile data.
-        
-        Form fields to match:
-        ${unmatchedFields.map((field, index) => `
-        Field ${index}: {
-          id: "${field.id}",
-          name: "${field.name}",
-          placeholder: "${field.placeholder}",
-          label: "${field.label}",
-          type: "${field.type}"
-        }`).join('\n')}
-        
-        Available profile data:
-        ${JSON.stringify(profileData, null, 2)}
-        
-        Return a JSON array of matches in this exact format:
-        [
-          {
-            "fieldIndex": 0,
-            "profileKey": "firstName",
-            "confidence": 0.95,
-            "reasoning": "Field labeled 'First Name' matches firstName profile data"
-          }
-        ]
-        
-        Only include matches with confidence > 0.5. Return empty array if no good matches.
-      `;
+      // Prepare lightweight field descriptors (no DOM elements)
+      const fields = unmatchedFields.map((f) => ({
+        id: f.id,
+        name: f.name,
+        placeholder: f.placeholder,
+        label: f.label,
+        type: f.type,
+        tagName: f.tagName,
+        ariaLabel: f.ariaLabel,
+        autocomplete: f.autocomplete,
+      }));
 
-      const response = await fetch(`${this.geminiAPI.baseURL}?key=${this.geminiAPI.apiKey}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          contents: [{
-            parts: [{
-              text: prompt
-            }]
-          }],
-          generationConfig: {
-            temperature: 0.1,
-            maxOutputTokens: 1024
-          }
-        })
+      const domain = location.host;
+      const response = await new Promise((resolve) => {
+        chrome.runtime.sendMessage({
+          action: 'aiMatchFields',
+          fields,
+          profileData,
+          domain,
+        }, resolve);
       });
 
-      if (!response.ok) {
-        throw new Error(`Gemini API error: ${response.status}`);
+      if (!response || !response.success || !response.data) {
+        throw new Error(response?.error || 'AI match failed');
       }
 
-      const data = await response.json();
-      const aiResponse = data.candidates[0].content.parts[0].text;
-      
-      // Parse AI response
-      const aiMatches = JSON.parse(aiResponse.replace(/```json\n?|\n?```/g, ''));
-      
-      return aiMatches.map(match => ({
-        field: unmatchedFields[match.fieldIndex],
-        profileKey: match.profileKey,
-        value: profileData[match.profileKey],
-        confidence: match.confidence,
-        method: 'ai',
-        reasoning: match.reasoning
-      }));
+      const suggestions = response.data.suggestions || [];
+      return suggestions
+        .filter(s => typeof s.fieldIndex === 'number' && s.confidence > 0.5)
+        .map(s => ({
+          field: unmatchedFields[s.fieldIndex],
+          profileKey: s.profileKey,
+          value: profileData[s.profileKey],
+          confidence: s.confidence,
+          method: 'ai',
+          reasoning: s.reasoning,
+        }));
 
     } catch (error) {
       console.error('AI matching failed:', error);
@@ -376,11 +512,39 @@ class SmartAutofill {
 
         if (!value) continue;
 
-        // Set the value
-        element.value = value;
+        // Ensure element is focused so frameworks register updates
+        try { element.focus({ preventScroll: true }); } catch (_) {}
 
-        // Dispatch events to notify the website
+        // Set the value depending on element type
+        if (element.matches('[contenteditable="true"]')) {
+          // For contenteditable (e.g., Google Forms long answers)
+          try {
+            document.execCommand('selectAll', false, null);
+            document.execCommand('insertText', false, value);
+          } catch (_) {
+            element.textContent = value;
+          }
+        } else if (element.tagName.toLowerCase() === 'select') {
+          // Basic select handling by exact text/value match
+          let set = false;
+          for (const opt of element.options) {
+            if (opt.value.toLowerCase() === value.toLowerCase() || opt.text.toLowerCase() === value.toLowerCase()) {
+              element.value = opt.value;
+              set = true;
+              break;
+            }
+          }
+          if (!set) {
+            element.value = value; // best-effort
+          }
+        } else {
+          element.value = value;
+        }
+
+        // Dispatch events to notify the website (simulate typing)
+        try { element.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'a' })); } catch (_) {}
         element.dispatchEvent(new Event('input', { bubbles: true }));
+        try { element.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'a' })); } catch (_) {}
         element.dispatchEvent(new Event('change', { bubbles: true }));
         element.dispatchEvent(new Event('blur', { bubbles: true }));
 
@@ -389,7 +553,7 @@ class SmartAutofill {
 
         filledCount++;
         
-        console.log(`Filled field: ${match.field.name || match.field.id} with value: ${value}`);
+        console.log(`Filled field: ${match.field.name || '""'} ${match.field.id ? `(#${match.field.id})` : ''} with value: ${value}`);
 
       } catch (error) {
         console.error('Failed to fill field:', error);
@@ -401,7 +565,105 @@ class SmartAutofill {
       this.showNotification(`Successfully filled ${filledCount} fields`, 'success');
     }
 
+    // Additionally try to fill MCQ/Option style questions (e.g., Google Forms)
+    try {
+      const mcqCount = await this.fillOptionQuestions(matches.map(m => m.profileKey).filter(Boolean), matches[0]?.value ? {} : {});
+      filledCount += mcqCount;
+    } catch (e) {
+      console.warn('MCQ fill attempt failed:', e);
+    }
+
     return filledCount;
+  }
+
+  // Try to fill radio/checkbox options based on profile data.
+  // We infer keys from question labels and map them using fieldMappings keys already used above.
+  async fillOptionQuestions(usedKeys = [], profileOverrides = {}) {
+    // Build a combined profile data map from the page-level profile passed earlier if accessible
+    // Fallback: try to fetch last used profile via background if needed (skipped for simplicity)
+    let count = 0;
+
+    const fieldMappings = {
+      firstName: ['first', 'fname', 'given', 'forename'],
+      lastName: ['last', 'lname', 'surname', 'family'],
+      email: ['email', 'mail', 'e-mail'],
+      phone: ['phone', 'tel', 'mobile', 'cell'],
+      dateOfBirth: ['birth', 'dob', 'birthday', 'born'],
+      gender: ['gender', 'sex'],
+      country: ['country', 'nation'],
+      state: ['state', 'province', 'region'],
+      city: ['city', 'town', 'locality'],
+      degree: ['degree', 'qualification', 'education'],
+      languages: ['language', 'lang', 'speak'],
+      skills: ['skill', 'expertise', 'ability']
+    };
+
+    // Collect all option-like elements
+    const optionSelectors = '[role="radio"], [role="checkbox"]';
+    const optionElements = Array.from(document.querySelectorAll(optionSelectors));
+    if (optionElements.length === 0) return 0;
+
+    // Group options by their question container
+    const groups = new Map();
+    for (const el of optionElements) {
+      const container = el.closest('[role="listitem"], [role="group"], .freebirdFormviewerComponentsQuestionBaseRoot') || el.parentElement;
+      if (!container) continue;
+      if (!groups.has(container)) groups.set(container, []);
+      groups.get(container).push(el);
+    }
+
+    // Determine question label and try to find matching profile key
+    for (const [container, options] of groups.entries()) {
+      const questionLabel = this.getFieldLabel(container) || container.querySelector('[role="heading"], .freebirdFormviewerComponentsQuestionBaseTitle')?.textContent?.trim() || '';
+      const qText = (questionLabel || '').toLowerCase();
+
+      let matchedKey = null;
+      for (const [key, patterns] of Object.entries(fieldMappings)) {
+        if (patterns.some(p => qText.includes(p))) {
+          matchedKey = key;
+          break;
+        }
+      }
+      if (!matchedKey) continue;
+
+      // Try to get the desired value from the profile stored earlier on window if any
+      const profile = window.__lastAutofillProfileData || {};
+      const desired = (profileOverrides[matchedKey] ?? profile[matchedKey]) || '';
+      if (!desired) continue;
+
+      const desiredVals = Array.isArray(desired) ? desired.map(String) : [String(desired)];
+
+      // Find an option whose text matches desired value
+      for (const desiredVal of desiredVals) {
+        const dNorm = this._norm(desiredVal);
+        let clicked = false;
+        for (const opt of options) {
+          const text = opt.getAttribute('aria-label') || opt.textContent || '';
+          const tNorm = this._norm(text);
+          if (!tNorm) continue;
+          if (tNorm === dNorm || tNorm.includes(dNorm) || dNorm.includes(tNorm)) {
+            try {
+              opt.scrollIntoView({ block: 'center', inline: 'center' });
+              opt.click();
+              count++;
+              clicked = true;
+              break;
+            } catch (_) {}
+          }
+        }
+        if (clicked) break;
+      }
+    }
+
+    return count;
+  }
+
+  _norm(s) {
+    return String(s || '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .replace(/[\.:,;"'`]/g, '')
+      .trim();
   }
 
   addFillAnimation(element) {

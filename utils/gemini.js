@@ -1,49 +1,47 @@
-// Gemini API integration
+// Gemini API integration (via secure proxy). NO API KEYS IN CLIENT CODE.
 export class GeminiAPI {
   constructor() {
-    // In production, this key should be stored securely on the server
-    // NEVER expose API keys in client-side code
-    this.baseURL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent';
-    this.apiKey = process.env.GEMINI_API_KEY || 'AIzaSyB3rWKBuqOTrV0uM1v3GSXpWhGy2CukEEA'; // Rounak Mishra is the owner of this API
+    // Configure a server-side proxy endpoint that attaches API keys securely.
+    // Example: Vercel/Netlify/Cloudflare Worker URL
+    this.proxyURL = 'https://YOUR_AI_PROXY_URL/generate';
   }
 
   async generateContent(prompt, options = {}) {
     try {
-      const response = await fetch(`${this.baseURL}?key=${this.apiKey}`, {
+      const response = await fetch(this.proxyURL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          contents: [{
-            parts: [{
-              text: prompt
-            }]
-          }],
-          generationConfig: {
-            temperature: options.temperature || 0.7,
-            topK: options.topK || 40,
-            topP: options.topP || 0.95,
-            maxOutputTokens: options.maxTokens || 1024,
-            ...options.config
-          }
-        })
+          prompt,
+          options: {
+            temperature: options.temperature ?? 0.7,
+            topK: options.topK ?? 40,
+            topP: options.topP ?? 0.95,
+            maxTokens: options.maxTokens ?? 1024,
+            ...options.config,
+          },
+        }),
       });
 
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`Gemini API error: ${response.status} - ${errorText}`);
+        throw new Error(`AI proxy error: ${response.status} - ${errorText}`);
       }
 
-      const data = await response.json();
-      
-      if (data.candidates && data.candidates[0] && data.candidates[0].content) {
-        return data.candidates[0].content.parts[0].text;
-      } else {
-        throw new Error('Invalid response format from Gemini API');
+      // Expect proxy to return { text: "..." } or raw text
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const data = await response.json();
+        if (typeof data.text === 'string') return data.text;
+        // Fallbacks: some proxies may return {response: '...'}
+        if (typeof data.response === 'string') return data.response;
+        throw new Error('Invalid proxy JSON format');
       }
+      return await response.text();
     } catch (error) {
-      console.error('Gemini API call failed:', error);
+      console.error('Gemini proxy call failed:', error);
       throw new Error(`Failed to generate content: ${error.message}`);
     }
   }
@@ -52,50 +50,33 @@ export class GeminiAPI {
     const prompt = `
       You are an AI assistant specialized in form field analysis and autofill suggestions.
       
-      **Task**: Analyze the following web form and provide intelligent autofill suggestions based on the user's profile.
+      Task: Analyze the following web form and provide intelligent autofill suggestions based on the user's profile.
       
-      **Form Information**:
+      Form Information:
       Domain: ${domain}
       Fields: ${JSON.stringify(formFields, null, 2)}
       
-      **User Profile**:
+      User Profile:
       ${JSON.stringify(userProfile, null, 2)}
       
-      **Instructions**:
-      1. For each form field, determine the most appropriate value from the user profile
-      2. Classify each field type (name, email, phone, address, education, experience, skills, etc.)
-      3. Assign a confidence score (0.0 to 1.0) based on how certain you are about the match
-      4. Provide reasoning for each suggestion
-      5. Consider context clues from field names, labels, and placeholders
-      
-      **Confidence Guidelines**:
-      - 0.9-1.0: Perfect match (e.g., "email" field with user's email)
-      - 0.7-0.8: High confidence (e.g., "first_name" with user's firstName)
-      - 0.5-0.6: Medium confidence (contextual match)
-      - 0.0-0.4: Low confidence (uncertain or no match)
-      
-      **Response Format** (JSON only, no other text):
+      Response Format (strict JSON only, no markdown, no commentary):
       {
         "suggestions": [
           {
-            "fieldId": "field_identifier",
-            "fieldName": "field_name_or_label",
-            "classification": "field_type",
-            "suggestedValue": "value_from_profile",
+            "fieldIndex": 0,
+            "profileKey": "firstName",
             "confidence": 0.95,
-            "reasoning": "Clear explanation of why this value was chosen"
+            "reasoning": "Field labeled 'First Name' matches firstName"
           }
-        ],
-        "overallConfidence": 0.85,
-        "domainTrust": "high|medium|low",
-        "recommendations": ["Any additional notes or recommendations"]
+        ]
       }
     `;
 
-    return await this.generateContent(prompt, {
-      temperature: 0.3,
-      maxTokens: 2048
+    const text = await this.generateContent(prompt, {
+      temperature: 0.2,
+      maxTokens: 1200,
     });
+    return this.safeParseJSON(text, { suggestions: [] });
   }
 
   async generateEssayResponse(question, context, userProfile, requirements = {}) {
@@ -132,10 +113,11 @@ export class GeminiAPI {
       }
     `;
 
-    return await this.generateContent(prompt, {
+    const text = await this.generateContent(prompt, {
       temperature: 0.6,
       maxTokens: 1500
     });
+    return this.safeParseJSON(text, { response: '', wordCount: 0, confidence: 0, keyPoints: [], reasoning: '', suggestions: [] });
   }
 
   async analyzeMCQOptions(question, options, context, userProfile) {
@@ -173,10 +155,11 @@ export class GeminiAPI {
       }
     `;
 
-    return await this.generateContent(prompt, {
+    const text = await this.generateContent(prompt, {
       temperature: 0.2,
       maxTokens: 1024
     });
+    return this.safeParseJSON(text, { selectedOption: '', selectedValue: '', confidence: 0, reasoning: '', optionAnalysis: [] });
   }
 
   async classifyFormSecurity(domain, formFields) {
@@ -197,9 +180,21 @@ export class GeminiAPI {
       }
     `;
 
-    return await this.generateContent(prompt, {
+    const text = await this.generateContent(prompt, {
       temperature: 0.1,
       maxTokens: 512
     });
+    return this.safeParseJSON(text, { trustLevel: 'medium', securityScore: 0.5, sensitiveFields: [], recommendations: [], allowAutofill: true, reasoning: '' });
+  }
+
+  safeParseJSON(text, fallback) {
+    try {
+      // Remove possible code fences if any
+      const clean = text.replace(/```json\n?|```/g, '').trim();
+      return JSON.parse(clean);
+    } catch (e) {
+      console.warn('Failed to parse AI JSON, returning fallback.', e, text);
+      return fallback;
+    }
   }
 }

@@ -1,9 +1,11 @@
 // Background service worker for the extension
 import { ProfileManager } from './utils/profiles.js';
+import { GeminiAPI } from './utils/gemini.js';
 
 class BackgroundService {
   constructor() {
     this.profileManager = new ProfileManager();
+    this.gemini = new GeminiAPI();
     this.setupMessageHandlers();
     this.setupContextMenus();
   }
@@ -90,6 +92,20 @@ class BackgroundService {
           // This is handled by content script now
           sendResponse({ success: false, error: 'Use content script for form analysis' });
           break;
+
+        case 'aiMatchFields': {
+          // AI-powered field mapping via secure proxy
+          const { fields, profileData, domain } = request;
+          try {
+            const result = await this.gemini.analyzeFormFields(fields, profileData, domain);
+            // Expect result like { suggestions: [{ fieldIndex, profileKey, confidence, reasoning }] }
+            sendResponse({ success: true, data: result });
+          } catch (e) {
+            console.error('AI match failed:', e);
+            sendResponse({ success: false, error: e.message });
+          }
+          break;
+        }
 
         default:
           sendResponse({ success: false, error: 'Unknown action' });

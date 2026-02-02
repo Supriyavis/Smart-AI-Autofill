@@ -51,22 +51,51 @@ class PopupManager {
         return;
       }
 
-      // Inject content script if needed
+      // Inject content script into ALL frames (supports iframes)
       try {
         await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
+          target: { tabId: tab.id, allFrames: true },
           files: ['content.js']
         });
       } catch (error) {
-        // Content script might already be injected
-        console.log('Content script already injected or injection failed:', error);
+        console.log('Content script injection (all frames) note:', error);
       }
 
-      // Send autofill message to content script
-      const response = await chrome.tabs.sendMessage(tab.id, {
-        action: 'autofillProfile',
-        profile: this.selectedProfile || this.profiles[0]
+      // Broadcast autofill message to ALL frames by executing a small script
+      const profile = this.selectedProfile || this.profiles[0];
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id, allFrames: true },
+        world: 'ISOLATED',
+        func: (p) => {
+          try {
+            // Try direct call if the object exists in this frame
+            if (window.smartAutofill && typeof window.smartAutofill.handleAutofillRequest === 'function') {
+              return window.smartAutofill.handleAutofillRequest(p);
+            }
+            // Otherwise, request via runtime message which the content script listens for in this frame
+            return new Promise((resolve) => {
+              chrome.runtime.sendMessage({ action: 'autofillProfile', profile: p }, resolve);
+            });
+          } catch (e) {
+            return { success: false, error: e.message };
+          }
+        },
+        args: [profile]
       });
+
+      // Aggregate results across frames
+      let totalFilled = 0;
+      let totalFields = 0;
+      let anySuccess = false;
+      for (const r of results) {
+        const res = r?.result;
+        if (res && res.success) {
+          anySuccess = true;
+          totalFilled += Number(res.fieldsCount || 0);
+          totalFields = Math.max(totalFields, Number(res.totalFields || 0));
+        }
+      }
+      const response = anySuccess ? { success: true, fieldsCount: totalFilled, totalFields } : { success: false };
 
       if (response && response.success) {
         // Increment fill count
